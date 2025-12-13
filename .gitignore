@@ -1,0 +1,4 @@
+trained_network.json
+node_modules/
+yarn.lock
+test/mnist_train.csv
