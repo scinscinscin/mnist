@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "policies": [{ "action": "provider.use", "resource": "llama", "effect": "allow" }],
+  "providers": {
+    "llama": {
+      "name": "llama.cpp",
+      "package": "aisdk:@ai-sdk/openai-compatible",
+      "settings": { "baseURL": "http://192.168.0.78:8080/v1" },
+      "models": {
+        "Qwen3.8-27B-ASCII-Condensed-UD-IQ4_XS": {
+          "modelID": "bsaleh/Qwen3.8-27B-ASCII-Condensed:UD-IQ4_XS",
+          "name": "bsaleh/Qwen3.8-27B-ASCII-Condensed:UD-IQ4_XS",
+          "limit": { "context": 262144, "output": 131072 }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "searxng": {
+        "type": "local",
+        "command": ["npx", "-y", "@nitish-raj/searxng-mcp-bridge"],
+        "environment": { "SEARXNG_INSTANCE_URL": "http://192.168.0.109:6967" }
+      }
+    }
+  }
+}

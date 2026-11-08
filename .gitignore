@@ -1,0 +1,5 @@
+.vscode/
+node_modules
+yarn.lock
+mnist_train.csv
+mnist_train_full.csv
