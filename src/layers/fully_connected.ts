@@ -21,7 +21,7 @@ export class FullyConnectedLayer extends Layer<FullyConnectedLayerSerialized> {
 
   forward(input: Tensor): LayerPropogationOutput {
     if (input instanceof Tensor2D == false) {
-      throw new Error("Input not suitable for fully connected layer.");
+      throw new Error("Input not suitable for FullyConnectedLayer.");
     }
 
     const input_with_bias = input.matrix.append_column(1);

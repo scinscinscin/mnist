@@ -1,5 +1,8 @@
 import { Activation1D } from "../activations";
 import { Matrix, mulberry32 } from "../matrix";
+import { Description, Layer, LayerPropogationOutput, NoopPatch, Tensor, Tensor2D, Tensor3D } from "../network";
+
+interface ConvolutionalLayerSerialized {}
 
 export class ConvolutionalLayer {
   kernels: Matrix[][];
@@ -178,10 +181,89 @@ export class AveragePoolingLayer {
   }
 }
 
-export class FlattenLayer {
-  forward(input_channels: Matrix[]): Matrix {
+interface FlattenLayerLayerSerialized {
+  rows: number;
+  cols: number;
+  channels: number;
+}
+
+export class FlattenLayerLayerOutput extends LayerPropogationOutput {
+  constructor(public readonly output: Matrix) {
+    super();
+  }
+
+  get_output() {
+    return new Tensor2D(this.output);
+  }
+}
+
+export class FlattenLayer extends Layer<FlattenLayerLayerSerialized> {
+  constructor(
+    public readonly rows: number,
+    public readonly cols: number,
+    public readonly channels: number = 1,
+  ) {
+    super();
+  }
+
+  forward(input: Tensor): FlattenLayerLayerOutput {
+    if (input instanceof Tensor3D == false) throw new Error("Input not suitable for FlattenLayer");
+
+    const input_channels = input.matrix;
     const flat = [] as number[];
     for (const channel of input_channels) for (const row of channel.arr) flat.push(...row);
-    return Matrix.from_existing([flat]);
+    return new FlattenLayerLayerOutput(Matrix.from_existing([flat]));
+  }
+
+  get_updates(tensor: Tensor, activation: LayerPropogationOutput) {
+    if (tensor instanceof Tensor2D == false || activation instanceof FlattenLayerLayerOutput == false)
+      throw new Error("Incorrect classes passed to get_updates");
+
+    const error_matrix = tensor.matrix;
+    const expected_cols = this.rows * this.cols * this.channels;
+    if (error_matrix.rows !== 1 || error_matrix.cols !== expected_cols)
+      throw new Error(
+        `FlattenLayer error matrix is ${error_matrix.rows}x${error_matrix.cols}, expected 1x${expected_cols}`,
+      );
+
+    // unroll the 1d error row back into per-channel feature maps, inverting
+    // the forward pass: channels were flattened first, then each row in order
+    const flat = error_matrix.arr[0];
+    const unrolled = [] as Matrix[];
+    let offset = 0;
+
+    for (let ch = 0; ch < this.channels; ch++) {
+      const channel = [] as number[][];
+      for (let r = 0; r < this.rows; r++)
+        channel.push(flat.slice(offset + r * this.cols, offset + (r + 1) * this.cols));
+
+      unrolled.push(Matrix.from_existing(channel));
+      offset += this.rows * this.cols;
+    }
+
+    return { new_error: new Tensor3D(unrolled), patch: new NoopPatch() };
+  }
+
+  update() {}
+
+  to_json() {
+    return { rows: this.rows, cols: this.cols, channels: this.channels };
+  }
+
+  describe(c: Description) {
+    if (c.rows !== this.rows)
+      throw new Error(`FlattenLayer row dimension mismatch. Expected ${this.rows}, received ${c.rows}`);
+    if (c.columns !== this.cols)
+      throw new Error(`FlattenLayer column dimension mismatch. Expected ${this.cols}, received ${c.columns}`);
+    if ((c.channels ?? 1) !== this.channels)
+      throw new Error(
+        `FlattenLayer channel dimension mismatch. Expected ${this.channels}, received ${c.channels ?? 1}`,
+      );
+
+    const columns = this.rows * this.cols * this.channels;
+    return {
+      next: { rows: 1, channels: 1, columns },
+      str: `FlattenLayer (${this.rows} x ${this.cols} x ${this.channels})`,
+    };
   }
 }

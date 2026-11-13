@@ -97,3 +97,13 @@ export abstract class Patch {
   abstract add(p: Patch): Patch;
   abstract scale(c: number): Patch;
 }
+
+export class NoopPatch extends Patch {
+  add() {
+    return this;
+  }
+
+  scale() {
+    return this;
+  }
+}
