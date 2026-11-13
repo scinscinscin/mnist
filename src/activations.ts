@@ -14,6 +14,21 @@ export const sigmoid: Activation1D = {
   },
 };
 
+export const tanh: Activation1D = {
+  id: "tanh_1d",
+  forward: (nums) => nums.map(Math.tanh),
+  backward: (x) => {
+    const d = Math.tanh(x);
+    return 1 - d * d;
+  },
+};
+
+export const relu: Activation1D = {
+  id: "relu_1d",
+  forward: (nums) => nums.map((x) => (x > 0 ? x : 0)),
+  backward: (x) => (x > 0 ? 1 : 0),
+};
+
 // Output activation: softmax, paired with cross-entropy.
 // `forward` is a placeholder (softmax is applied row-wise in Layer.forward).
 // For softmax + cross-entropy the gradient wrt the logits is exactly

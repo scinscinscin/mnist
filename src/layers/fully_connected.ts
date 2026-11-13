@@ -42,7 +42,7 @@ export class FullyConnectedLayer extends Layer<FullyConnectedLayerSerialized> {
     const { iwb, raw } = propogation_output;
 
     const updates = Matrix.init(this.matrix.rows, this.matrix.cols);
-    const new_error = Matrix.init(1, this.matrix.rows);
+    const new_error = Matrix.init(1, this.matrix.rows - 1);
 
     for (let i = 0; i < this.matrix.rows; i++) {
       for (let j = 0; j < this.matrix.cols; j++) {

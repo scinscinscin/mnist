@@ -1,10 +1,14 @@
 import { Activation1D } from "../activations";
-import { Matrix, mulberry32 } from "../matrix";
-import { Description, Layer, LayerPropogationOutput, NoopPatch, Tensor, Tensor2D, Tensor3D } from "../network";
+import { Matrix } from "../matrix";
+import { Description, Layer, LayerPropogationOutput, NoopPatch, Patch, Tensor, Tensor2D, Tensor3D } from "../network";
 
-interface ConvolutionalLayerSerialized {}
+interface ConvolutionalLayerSerialized {
+  kernels: Matrix[][];
+  bias: number[];
+  activation: string;
+}
 
-export class ConvolutionalLayer {
+export class ConvolutionalLayer extends Layer<ConvolutionalLayerSerialized> {
   kernels: Matrix[][];
   bias: number[];
 
@@ -14,26 +18,33 @@ export class ConvolutionalLayer {
     seed: number,
     public readonly options?: { padding?: number; stride?: number; dilation?: number },
   ) {
+    super();
     const kernels = [] as Matrix[][];
     const bias = [] as number[];
-    const rng = mulberry32(seed++);
+
+    // He initialization: zero-centered weights scaled by the fan-in keep
+    // pre-activation magnitudes O(1) through the conv stack, so the ReLU and
+    // downstream activation units stay out of saturation and gradients flow
+    const scale = Math.sqrt(2 / (kconfig.rows * kconfig.cols * kconfig.input_channels));
 
     // initialize kernels weights and biases
     for (let i = 0; i < kconfig.output_channels; i++) {
       const kernel = [] as Matrix[];
       for (let j = 0; j < kconfig.input_channels; j++)
-        kernel.push(Matrix.from_random(kconfig.rows, kconfig.cols, seed++));
-
+        kernel.push(Matrix.from_uniform(kconfig.rows, kconfig.cols, seed++, scale));
       kernels.push(kernel);
-      bias.push(rng());
+      bias.push(0);
     }
 
     this.kernels = kernels;
     this.bias = bias;
   }
 
-  forward(input_channels: Matrix[]) {
-    // make sure that all 3 channels in the input have the same size
+  forward(input: Tensor): ConvolutionalLayerOutput {
+    if (input instanceof Tensor3D == false) throw new Error("Input not suitable for ConvolutionalLayer");
+
+    const input_channels = input.matrix;
+    // make sure that all channels in the input have the same size
     const { rows: input_rows, cols: input_cols } = input_channels[0];
     const matches = input_channels.every((m) => m.rows == input_rows && m.cols == input_cols);
 
@@ -84,23 +95,164 @@ export class ConvolutionalLayer {
       output_channels.push(Matrix.from_existing(raw.arr.map((row) => this.activation.forward(row))));
     }
 
-    return { raw: output_channels_raw, output: output_channels };
+    return new ConvolutionalLayerOutput(output_channels_raw, output_channels, input_channels);
+  }
+
+  update(patch: Patch) {
+    if (patch instanceof ConvolutionalLayerPatch == false) throw new Error("Incorrect class");
+
+    this.kernels = this.kernels.map((kernel, oc) => kernel.map((k, ci) => k.add(patch.updates[oc][ci])));
+    this.bias = this.bias.map((b, i) => b + patch.bias[i]);
+  }
+
+  get_updates(error: Tensor, propogation_output: LayerPropogationOutput) {
+    if (error instanceof Tensor3D == false || propogation_output instanceof ConvolutionalLayerOutput == false)
+      throw new Error("Incorrect classes passed to get_updates");
+
+    const { raw, input } = propogation_output;
+    const error_channels = error.matrix;
+    if (error_channels.length !== this.kernels.length)
+      throw new Error(`expected ${this.kernels.length} error channels, got ${error_channels.length}`);
+
+    const { rows: kernel_rows, cols: kernel_cols } = this.kernels[0][0];
+    const { rows: input_rows, cols: input_cols } = input[0];
+    const { stride: _stride = 0, dilation: _dilation = 0, padding = 0 } = this.options ?? {};
+    const stride = _stride || 1;
+    const dilation = _dilation || 1;
+
+    const updates = [] as Matrix[][];
+    const bias_updates = [] as number[];
+    const new_error = input.map((m) => Matrix.init(m.rows, m.cols));
+
+    for (let oc = 0; oc < this.kernels.length; oc++) {
+      const kernel = this.kernels[oc];
+      const kernel_updates = kernel.map((k) => Matrix.init(k.rows, k.cols));
+      let bias_update = 0;
+
+      for (let ci = 0; ci < kernel.length; ci++) {
+        const input_slice = input[ci];
+
+        for (let i = 0; i < error_channels[oc].rows; i++)
+          for (let j = 0; j < error_channels[oc].cols; j++) {
+            // Compute common factor dA/dZ * dC/dA used in both weight and loss adjustment
+            const common = this.activation.backward(raw[oc].arr[i][j]) * error_channels[oc].arr[i][j];
+            bias_update += common;
+
+            /**
+             * dC/dW = input * dA/dZ * dC/dA
+             * dC/dA_in = kernel * dA/dZ * dC/dA, scattered back to the input positions
+             */
+            for (let r = 0; r < kernel_rows; r++)
+              for (let c = 0; c < kernel_cols; c++) {
+                const in_r = i * stride - padding + r * dilation;
+                const in_c = j * stride - padding + c * dilation;
+                if (in_r >= 0 && in_r < input_rows && in_c >= 0 && in_c < input_cols) {
+                  kernel_updates[ci].arr[r][c] += input_slice.arr[in_r][in_c] * common;
+                  new_error[ci].arr[in_r][in_c] += kernel[ci].arr[r][c] * common;
+                }
+              }
+          }
+      }
+
+      updates.push(kernel_updates);
+      bias_updates.push(bias_update);
+    }
+
+    return {
+      new_error: new Tensor3D(new_error),
+      patch: new ConvolutionalLayerPatch(updates, bias_updates),
+    };
+  }
+
+  to_json(): ConvolutionalLayerSerialized {
+    return { kernels: this.kernels, bias: this.bias, activation: this.activation.id };
+  }
+
+  describe(c: Description) {
+    const channels = c.channels ?? 1;
+    if (channels !== this.kernels[0].length)
+      throw new Error(
+        `ConvolutionalLayer has mismatch between input channels ${this.kernels[0].length} and ${channels}`,
+      );
+
+    const { rows: kernel_rows, cols: kernel_cols } = this.kernels[0][0];
+    const { stride: _stride = 0, dilation: _dilation = 0, padding = 0 } = this.options ?? {};
+    const stride = _stride || 1;
+    const dilation = _dilation || 1;
+    const effective_kernel_rows = dilation * (kernel_rows - 1) + 1;
+    const effective_kernel_cols = dilation * (kernel_cols - 1) + 1;
+    const output_rows = Math.floor((c.rows + 2 * padding - effective_kernel_rows) / stride) + 1;
+    const output_cols = Math.floor((c.columns + 2 * padding - effective_kernel_cols) / stride) + 1;
+
+    return {
+      next: { rows: output_rows, columns: output_cols, channels: this.kernels.length },
+      str: `ConvolutionalLayer (${kernel_rows} x ${kernel_cols}, ${channels} -> ${this.kernels.length}, stride ${stride}, dilation ${dilation}, padding ${padding})`,
+    };
   }
 }
 
-export class MaxPoolingLayer {
+export class ConvolutionalLayerOutput extends LayerPropogationOutput {
+  constructor(
+    public readonly raw: Matrix[],
+    public readonly output: Matrix[],
+    public readonly input: Matrix[],
+  ) {
+    super();
+  }
+
+  get_output(): Tensor {
+    return new Tensor3D(this.output);
+  }
+}
+
+export class ConvolutionalLayerPatch extends Patch {
+  constructor(
+    public readonly updates: Matrix[][],
+    public readonly bias: number[],
+  ) {
+    super();
+  }
+
+  add(p: Patch): Patch {
+    if (p instanceof ConvolutionalLayerPatch == false) throw new Error("Not ConvolutionalLayerPatch");
+
+    return new ConvolutionalLayerPatch(
+      this.updates.map((kernel, oc) => kernel.map((m, ci) => m.add(p.updates[oc][ci]))),
+      this.bias.map((b, i) => b + p.bias[i]),
+    );
+  }
+
+  scale(c: number): Patch {
+    return new ConvolutionalLayerPatch(
+      this.updates.map((kernel) => kernel.map((m) => m.multiply_scalar(c))),
+      this.bias.map((b) => b * c),
+    );
+  }
+}
+
+interface MaxPoolingLayerSerialized {
+  rows: number;
+  cols: number;
+  stride: number;
+}
+
+export class MaxPoolingLayer extends Layer<MaxPoolingLayerSerialized> {
   rows: number;
   cols: number;
   stride: number;
 
   constructor(kernel_size: { rows: number; cols: number; stride?: number }) {
+    super();
     this.rows = kernel_size.rows;
     this.cols = kernel_size.cols;
     // 0 means default: stride equals the kernel size (non-overlapping)
     this.stride = kernel_size.stride ?? 0;
   }
 
-  forward(input_channels: Matrix[]) {
+  forward(input: Tensor): MaxPoolingLayerOutput {
+    if (input instanceof Tensor3D == false) throw new Error("Input not suitable for MaxPoolingLayer");
+
+    const input_channels = input.matrix;
     // make sure that all channels in the input have the same size
     const { rows: input_rows, cols: input_cols } = input_channels[0];
     const matches = input_channels.every((m) => m.rows == input_rows && m.cols == input_cols);
@@ -117,38 +269,129 @@ export class MaxPoolingLayer {
     const output_rows = Math.floor((input_rows - this.rows) / stride_rows) + 1;
     const output_cols = Math.floor((input_cols - this.cols) / stride_cols) + 1;
 
-    return input_channels.map((input) => {
+    const output = [] as Matrix[];
+    const mask = [] as Matrix[];
+
+    for (const input_channel of input_channels) {
       const pooled = Matrix.init(output_rows, output_cols);
+      // marks the argmax of each window; only that element receives the error
+      const mask_channel = Matrix.init(input_channel.rows, input_channel.cols);
 
       for (let i = 0; i < output_rows; i++)
         for (let j = 0; j < output_cols; j++) {
           let max = -Infinity;
+          let max_r = 0;
+          let max_c = 0;
 
           for (let r = 0; r < this.rows; r++)
-            for (let c = 0; c < this.cols; c++)
-              max = Math.max(max, input.arr[i * stride_rows + r][j * stride_cols + c]);
+            for (let c = 0; c < this.cols; c++) {
+              const v = input_channel.arr[i * stride_rows + r][j * stride_cols + c];
+              if (v > max) {
+                max = v;
+                max_r = r;
+                max_c = c;
+              }
+            }
 
           pooled.arr[i][j] = max;
+          mask_channel.arr[i * stride_rows + max_r][j * stride_cols + max_c] = 1;
         }
 
-      return pooled;
+      output.push(pooled);
+      mask.push(mask_channel);
+    }
+
+    return new MaxPoolingLayerOutput(output, mask);
+  }
+
+  update() {}
+
+  get_updates(error: Tensor, propogation_output: LayerPropogationOutput) {
+    if (error instanceof Tensor3D == false || propogation_output instanceof MaxPoolingLayerOutput == false)
+      throw new Error("Incorrect classes passed to get_updates");
+
+    const { mask } = propogation_output;
+    if (error.matrix.length !== mask.length) throw new Error("Pooling layer error channel count mismatch");
+
+    const stride_rows = this.stride || this.rows;
+    const stride_cols = this.stride || this.cols;
+
+    // scatter each error value back to the argmax of its window
+    const new_error = error.matrix.map((e, ch) => {
+      const input_rows = (e.rows - 1) * stride_rows + this.rows;
+      const input_cols = (e.cols - 1) * stride_cols + this.cols;
+      const unrolled = Matrix.init(input_rows, input_cols);
+
+      for (let i = 0; i < e.rows; i++)
+        for (let j = 0; j < e.cols; j++)
+          for (let r = 0; r < this.rows; r++)
+            for (let c = 0; c < this.cols; c++)
+              unrolled.arr[i * stride_rows + r][j * stride_cols + c] =
+                e.arr[i][j] * mask[ch].arr[i * stride_rows + r][j * stride_cols + c];
+
+      return unrolled;
     });
+
+    return { new_error: new Tensor3D(new_error), patch: new NoopPatch() };
+  }
+
+  to_json(): MaxPoolingLayerSerialized {
+    return { rows: this.rows, cols: this.cols, stride: this.stride };
+  }
+
+  describe(c: Description) {
+    const stride_rows = this.stride || this.rows;
+    const stride_cols = this.stride || this.cols;
+    const output_rows = Math.floor((c.rows - this.rows) / stride_rows) + 1;
+    const output_cols = Math.floor((c.columns - this.cols) / stride_cols) + 1;
+    if (output_rows <= 0 || output_cols <= 0)
+      throw new Error(
+        `MaxPoolingLayer of size ${this.rows}x${this.cols} is larger than the ${c.rows}x${c.columns} input`,
+      );
+
+    return {
+      next: { rows: output_rows, columns: output_cols, channels: c.channels ?? 1 },
+      str: `MaxPoolingLayer (${this.rows} x ${this.cols}, stride ${this.stride})`,
+    };
   }
 }
 
-export class AveragePoolingLayer {
+export class MaxPoolingLayerOutput extends LayerPropogationOutput {
+  constructor(
+    public readonly output: Matrix[],
+    public readonly mask: Matrix[],
+  ) {
+    super();
+  }
+
+  get_output(): Tensor {
+    return new Tensor3D(this.output);
+  }
+}
+
+interface AveragePoolingLayerSerialized {
+  rows: number;
+  cols: number;
+  stride: number;
+}
+
+export class AveragePoolingLayer extends Layer<AveragePoolingLayerSerialized> {
   rows: number;
   cols: number;
   stride: number;
 
   constructor(kernel_size: { rows: number; cols: number; stride?: number }) {
+    super();
     this.rows = kernel_size.rows;
     this.cols = kernel_size.cols;
     // 0 means default: stride equals the kernel size (non-overlapping)
     this.stride = kernel_size.stride ?? 0;
   }
 
-  forward(input_channels: Matrix[]): Matrix[] {
+  forward(input: Tensor): AveragePoolingLayerOutput {
+    if (input instanceof Tensor3D == false) throw new Error("Input not suitable for AveragePoolingLayer");
+
+    const input_channels = input.matrix;
     // make sure that all channels in the input have the same size
     const { rows: input_rows, cols: input_cols } = input_channels[0];
     const matches = input_channels.every((m) => m.rows == input_rows && m.cols == input_cols);
@@ -165,19 +408,78 @@ export class AveragePoolingLayer {
     const output_rows = Math.floor((input_rows - this.rows) / stride_rows) + 1;
     const output_cols = Math.floor((input_cols - this.cols) / stride_cols) + 1;
 
-    return input_channels.map((input) => {
-      const pooled = Matrix.init(output_rows, output_cols);
+    return new AveragePoolingLayerOutput(
+      input_channels.map((input) => {
+        const pooled = Matrix.init(output_rows, output_cols);
 
-      for (let i = 0; i < output_rows; i++)
-        for (let j = 0; j < output_cols; j++) {
-          let cumulative = 0;
+        for (let i = 0; i < output_rows; i++)
+          for (let j = 0; j < output_cols; j++) {
+            let cumulative = 0;
+            for (let r = 0; r < this.rows; r++)
+              for (let c = 0; c < this.cols; c++) cumulative += input.arr[i * stride_rows + r][j * stride_cols + c];
+            pooled.arr[i][j] = cumulative / (this.rows * this.cols);
+          }
+
+        return pooled;
+      }),
+    );
+  }
+
+  update() {}
+
+  get_updates(error: Tensor, propogation_output: LayerPropogationOutput) {
+    if (error instanceof Tensor3D == false || propogation_output instanceof AveragePoolingLayerOutput == false)
+      throw new Error("Incorrect classes passed to get_updates");
+
+    const stride_rows = this.stride || this.rows;
+    const stride_cols = this.stride || this.cols;
+
+    // the mean distributes each error value equally across its window
+    const new_error = error.matrix.map((e) => {
+      const input_rows = (e.rows - 1) * stride_rows + this.rows;
+      const input_cols = (e.cols - 1) * stride_cols + this.cols;
+      const unrolled = Matrix.init(input_rows, input_cols);
+
+      for (let i = 0; i < e.rows; i++)
+        for (let j = 0; j < e.cols; j++)
           for (let r = 0; r < this.rows; r++)
-            for (let c = 0; c < this.cols; c++) cumulative += input.arr[i * stride_rows + r][j * stride_cols + c];
-          pooled.arr[i][j] = cumulative / (this.rows * this.cols);
-        }
+            for (let c = 0; c < this.cols; c++)
+              unrolled.arr[i * stride_rows + r][j * stride_cols + c] = e.arr[i][j] / (this.rows * this.cols);
 
-      return pooled;
+      return unrolled;
     });
+
+    return { new_error: new Tensor3D(new_error), patch: new NoopPatch() };
+  }
+
+  to_json(): AveragePoolingLayerSerialized {
+    return { rows: this.rows, cols: this.cols, stride: this.stride };
+  }
+
+  describe(c: Description) {
+    const stride_rows = this.stride || this.rows;
+    const stride_cols = this.stride || this.cols;
+    const output_rows = Math.floor((c.rows - this.rows) / stride_rows) + 1;
+    const output_cols = Math.floor((c.columns - this.cols) / stride_cols) + 1;
+    if (output_rows <= 0 || output_cols <= 0)
+      throw new Error(
+        `AveragePoolingLayer of size ${this.rows}x${this.cols} is larger than the ${c.rows}x${c.columns} input`,
+      );
+
+    return {
+      next: { rows: output_rows, columns: output_cols, channels: c.channels ?? 1 },
+      str: `AveragePoolingLayer (${this.rows} x ${this.cols}, stride ${this.stride})`,
+    };
+  }
+}
+
+export class AveragePoolingLayerOutput extends LayerPropogationOutput {
+  constructor(public readonly output: Matrix[]) {
+    super();
+  }
+
+  get_output(): Tensor {
+    return new Tensor3D(this.output);
   }
 }
 

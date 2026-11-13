@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MNIST CNN Predictor</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1e26;
+    --border: #2a3040;
+    --text: #e6e9ef;
+    --muted: #8b93a7;
+    --accent: #4f9cf9;
+    --bar: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; font-weight: 600; }
+  .subtitle { color: var(--muted); font-size: 0.85rem; margin: 0 0 20px; text-align: center; }
+  .layout {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .draw-panel { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  canvas#pad {
+    width: 280px;
+    height: 280px;
+    background: #000;
+    border-radius: 8px;
+    cursor: crosshair;
+    touch-action: none;
+    image-rendering: pixelated;
+    box-shadow: 0 0 0 1px var(--border);
+  }
+  .btn-row { display: flex; gap: 10px; }
+  button {
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 8px 18px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.secondary { background: #39415a; }
+  .result { min-width: 280px; }
+  .result h2 { margin: 0 0 12px; font-size: 1rem; font-weight: 600; color: var(--muted); }
+  #big-digit {
+    font-size: 4rem;
+    font-weight: 700;
+    line-height: 1;
+    min-height: 4.5rem;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  .bar-row {
+    display: grid;
+    grid-template-columns: 20px 1fr 52px;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 5px;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .bar-track {
+    background: #10141b;
+    border-radius: 4px;
+    height: 10px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    background: var(--bar);
+    height: 100%;
+    width: 0%;
+    transition: width 0.25s ease;
+    border-radius: 4px;
+  }
+  .bar-row.top .bar-fill { background: var(--accent); }
+  .bar-row.top .bar-label, .bar-row.top .bar-pct { color: var(--text); font-weight: 700; }
+  #status {
+    margin-top: 18px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-align: center;
+    max-width: 320px;
+  }
+  #status.error { color: #f87171; }
+  #file-fallback { display: none; }
+  .viz { width: 100%; max-width: 780px; margin-top: 24px; }
+  .viz h2 { margin: 0 0 12px; font-size: 1rem; font-weight: 600; color: var(--muted); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .tabs button {
+    background: #10141b;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: 6px;
+  }
+  .tabs button.active { background: var(--accent); color: #fff; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .tile { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .tile canvas {
+    image-rendering: pixelated;
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px var(--border);
+  }
+  .tile canvas.map { width: 56px; height: 56px; }
+  .tile canvas.vec { background: #10141b; }
+  .tile-label { font-size: 0.68rem; color: var(--muted); }
+  .viz-note { margin-top: 12px; font-size: 0.72rem; color: var(--muted); min-height: 1em; }
+</style>
+</head>
+<body>
+  <h1>MNIST CNN Predictor</h1>
+  <p class="subtitle">Draw a digit in the box — the prediction updates as you write.<br>
+  Tip: serve this folder (e.g. <code>python3 -m http.server</code>) so it can load <code>weights_cnn.json</code>.</p>
+
+  <div class="layout">
+    <div class="panel draw-panel">
+      <canvas id="pad" width="28" height="28"></canvas>
+      <div class="btn-row">
+        <button id="clear-btn" class="secondary">Clear</button>
+        <button id="predict-btn">Predict</button>
+      </div>
+    </div>
+
+    <div class="panel result">
+      <h2>Prediction</h2>
+      <div id="big-digit">?</div>
+      <div id="bars"></div>
+    </div>
+  </div>
+
+  <div class="panel viz">
+    <h2>Feature maps</h2>
+    <div class="tabs" id="tabs"></div>
+    <div class="tiles" id="tiles"></div>
+    <div class="viz-note" id="viz-note">Draw a digit to see the network's internals.</div>
+  </div>
+
+  <div id="status">Loading weights…</div>
+  <input type="file" id="file-fallback" accept="application/json">
+
+<script>
+// ---------------------------------------------------------------------------
+// Inference for the CNN defined in src/index_cnn.ts:
+//   conv 5x5 (1->6, relu, padding 2)  [padding is not in the JSON; it is fixed
+//   avgpool 2x2                          in the training script]
+//   conv 5x5 (6->16, relu)
+//   avgpool 2x2
+//   flatten 5x5x16 = 400
+//   fc 400->120 tanh | fc 120->84 tanh | fc 84->10 softmax
+// Fully-connected weights are stored as (input+1) x output matrices; the last
+// row is the bias. This mirrors the forward pass in src/layers/*.ts.
+// ---------------------------------------------------------------------------
+
+const relu = (x) => (x > 0 ? x : 0);
+const tanhRow = (row) => row.map((x) => Math.tanh(x));
+function softmax(row) {
+  const max = Math.max(...row);
+  const exps = row.map((v) => Math.exp(v - max));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  return exps.map((v) => v / sum);
+}
+
+function conv(inputChannels, kernels, bias, padding, activation) {
+  const inputRows = inputChannels[0].length;
+  const inputCols = inputChannels[0][0].length;
+  const kernelRows = kernels[0][0].arr.length;
+  const kernelCols = kernels[0][0].arr[0].length;
+  const stride = 1;
+  const outRows = Math.floor((inputRows + 2 * padding - kernelRows) / stride) + 1;
+  const outCols = Math.floor((inputCols + 2 * padding - kernelCols) / stride) + 1;
+  const outChannels = [];
+  for (let oc = 0; oc < kernels.length; oc++) {
+    const raw = Array.from({ length: outRows }, () => new Array(outCols).fill(0));
+    for (let ci = 0; ci < kernels[oc].length; ci++) {
+      const k = kernels[oc][ci].arr;
+      const inp = inputChannels[ci];
+      for (let i = 0; i < outRows; i++)
+        for (let j = 0; j < outCols; j++)
+          for (let r = 0; r < kernelRows; r++) {
+            const in_r = i * stride - padding + r;
+            if (in_r < 0 || in_r >= inputRows) continue;
+            for (let c = 0; c < kernelCols; c++) {
+              const in_c = j * stride - padding + c;
+              if (in_c >= 0 && in_c < inputCols) raw[i][j] += k[r][c] * inp[in_r][in_c];
+            }
+          }
+    }
+    outChannels.push(raw.map((row) => row.map((x) => activation(x + bias[oc]))));
+  }
+  return outChannels;
+}
+
+function avgPool(channels, size) {
+  const rows = channels[0].length;
+  const cols = channels[0][0].length;
+  const outRows = rows / size;
+  const outCols = cols / size;
+  return channels.map((ch) => {
+    const out = [];
+    for (let i = 0; i < outRows; i++) {
+      const row = [];
+      for (let j = 0; j < outCols; j++) {
+        let s = 0;
+        for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) s += ch[i * size + r][j * size + c];
+        row.push(s / (size * size));
+      }
+      out.push(row);
+    }
+    return out;
+  });
+}
+
+function flatten(channels) {
+  const out = [];
+  for (const ch of channels) for (const row of ch) out.push(...row);
+  return out;
+}
+
+function fc(x, weights, activation) {
+  const m = weights.arr;
+  const out = new Array(m[0].length);
+  for (let j = 0; j < m[0].length; j++) {
+    let s = m[x.length][j]; // last row is the bias
+    for (let i = 0; i < x.length; i++) s += x[i] * m[i][j];
+    out[j] = s;
+  }
+  return activation(out);
+}
+
+function forward(model, grid28x28) {
+  const [l0, l1, l2, l3, l4, l5, l6, l7] = model;
+  const conv1 = conv([grid28x28], l0.kernels, l0.bias, 2, relu); // 6 channels, 28x28
+  const pool1 = avgPool(conv1, l1.rows); // 6 channels, 14x14
+  const conv2 = conv(pool1, l2.kernels, l2.bias, 0, relu); // 16 channels, 10x10
+  const pool2 = avgPool(conv2, l3.rows); // 16 channels, 5x5
+  let x = flatten(pool2); // l4 is rows/cols/channels metadata only
+  const fc1 = fc(x, l5.weights, tanhRow); // 120
+  const fc2 = fc(fc1, l6.weights, tanhRow); // 84
+  const probs = fc(fc2, l7.weights, softmax); // 10
+  return { conv1, pool1, conv2, pool2, fc1, fc2, probs };
+}
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+
+const canvas = document.getElementById("pad");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const bigDigit = document.getElementById("big-digit");
+const barsEl = document.getElementById("bars");
+const statusEl = document.getElementById("status");
+const fileFallback = document.getElementById("file-fallback");
+
+let model = null;
+let drawing = false;
+let lastPoint = null;
+let predictTimer = null;
+let lastResult = null;
+let activeLayer = "conv1";
+
+// build the 10 confidence bars once
+for (let d = 0; d < 10; d++) {
+  const row = document.createElement("div");
+  row.className = "bar-row";
+  row.innerHTML = `<span class="bar-label">${d}</span><div class="bar-track"><div class="bar-fill" id="bar-${d}"></div></div><span class="bar-pct" id="pct-${d}"></span>`;
+  barsEl.appendChild(row);
+}
+
+// ----- feature map visualization -----
+
+const LAYERS = [
+  { key: "conv1", label: "Conv 1 · 6 ch · 28×28", kind: "maps" },
+  { key: "pool1", label: "Pool 1 · 6 ch · 14×14", kind: "maps" },
+  { key: "conv2", label: "Conv 2 · 16 ch · 10×10", kind: "maps" },
+  { key: "pool2", label: "Pool 2 · 16 ch · 5×5", kind: "maps" },
+  { key: "fc1", label: "FC 1 · 120 tanh", kind: "vec", cols: 12, diverging: true },
+  { key: "fc2", label: "FC 2 · 84 tanh", kind: "vec", cols: 12, diverging: true },
+  { key: "out", label: "Output · 10 softmax", kind: "vec", cols: 10, prob: true },
+];
+
+const tabsEl = document.getElementById("tabs");
+const tilesEl = document.getElementById("tiles");
+const vizNoteEl = document.getElementById("viz-note");
+
+for (const layer of LAYERS) {
+  const btn = document.createElement("button");
+  btn.textContent = layer.label;
+  if (layer.key === activeLayer) btn.className = "active";
+  btn.addEventListener("click", () => {
+    activeLayer = layer.key;
+    [...tabsEl.children].forEach((b, i) => b.classList.toggle("active", LAYERS[i].key === activeLayer));
+    renderLayer();
+  });
+  tabsEl.appendChild(btn);
+}
+
+// grayscale for non-negative feature maps (already per-channel normalized)
+function mapColor(v) {
+  const g = Math.max(0, Math.min(255, Math.round(255 * v)));
+  return [g, g, g];
+}
+// diverging red/blue for tanh outputs in [-1, 1]
+function divergingColor(v) {
+  const t = Math.max(-1, Math.min(1, v));
+  if (t >= 0) return [26 + (255 - 26) * t, 30 + (120 - 30) * t, 38 + (90 - 38) * t];
+  const u = -t;
+  return [26 + (70 - 26) * u, 30 + (130 - 30) * u, 38 + (255 - 38) * u];
+}
+// single-hue scale for softmax probabilities in [0, 1]
+function probColor(p) {
+  return [26 + (79 - 26) * p, 30 + (156 - 30) * p, 38 + (249 - 38) * p];
+}
+
+function renderLayer() {
+  tilesEl.innerHTML = "";
+  if (!lastResult) {
+    vizNoteEl.textContent = "Draw a digit to see the network's internals.";
+    return;
+  }
+  const spec = LAYERS.find((l) => l.key === activeLayer);
+
+  if (spec.kind === "maps") {
+    // one tile per channel, each scaled to its own channel max
+    const channels = lastResult[spec.key];
+    channels.forEach((ch, i) => {
+      const rows = ch.length;
+      const cols = ch[0].length;
+      let max = 0;
+      for (const row of ch) for (const v of row) if (v > max) max = v;
+
+      const c = document.createElement("canvas");
+      c.className = "map";
+      c.width = cols;
+      c.height = rows;
+      const img = c.getContext("2d").createImageData(cols, rows);
+      for (let r = 0; r < rows; r++)
+        for (let col = 0; col < cols; col++) {
+          const [rr, gg, bb] = mapColor(max > 0 ? ch[r][col] / max : 0);
+          const o = (r * cols + col) * 4;
+          img.data[o] = rr;
+          img.data[o + 1] = gg;
+          img.data[o + 2] = bb;
+          img.data[o + 3] = 255;
+        }
+      c.getContext("2d").putImageData(img, 0, 0);
+
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      const label = document.createElement("div");
+      label.className = "tile-label";
+      label.textContent = `ch ${i} · max ${max.toFixed(2)}`;
+      tile.append(c, label);
+      tilesEl.appendChild(tile);
+    });
+    vizNoteEl.textContent =
+      "Feature maps after this layer (relu output). Each tile is scaled to its own channel's max, so black = 0.";
+    return;
+  }
+
+  // vector layers: one cell per neuron
+  const values = spec.key === "out" ? lastResult.probs : lastResult[spec.key];
+  const n = values.length;
+  const cols = spec.cols;
+  const rows = Math.ceil(n / cols);
+  const cell = 12; // 11px cell + 1px gap
+  const colorFor = spec.prob ? probColor : spec.diverging ? divergingColor : mapColor;
+
+  const c = document.createElement("canvas");
+  c.className = "vec";
+  c.width = cols * cell;
+  c.height = rows * cell;
+  c.style.width = c.width * 2 + "px";
+  c.style.height = c.height * 2 + "px";
+  const img = c.getContext("2d").createImageData(c.width, c.height);
+  values.forEach((v, i) => {
+    const cx = i % cols;
+    const cy = Math.floor(i / cols);
+    const rgb = colorFor(v);
+    for (let dr = 0; dr < cell - 1; dr++)
+      for (let dc = 0; dc < cell - 1; dc++) {
+        const o = ((cy * cell + 1 + dr) * c.width + (cx * cell + 1 + dc)) * 4;
+        img.data[o] = rgb[0];
+        img.data[o + 1] = rgb[1];
+        img.data[o + 2] = rgb[2];
+        img.data[o + 3] = 255;
+      }
+  });
+  c.getContext("2d").putImageData(img, 0, 0);
+
+  const tile = document.createElement("div");
+  tile.className = "tile";
+  const label = document.createElement("div");
+  label.className = "tile-label";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  label.textContent = `${n} neurons · min ${min.toFixed(2)} · max ${max.toFixed(2)}`;
+  tile.append(c, label);
+  tilesEl.appendChild(tile);
+
+  vizNoteEl.textContent = spec.prob
+    ? "Final softmax probabilities (0–1); brighter = more likely digit."
+    : "Activations of this fully-connected layer (tanh output). Red = positive, blue = negative.";
+}
+
+function setStatus(msg, isError = false) {
+  statusEl.textContent = msg;
+  statusEl.classList.toggle("error", isError);
+}
+
+function clearCanvas() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, 28, 28);
+}
+clearCanvas();
+
+function pointerPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: Math.min(27.9, Math.max(0.1, ((e.clientX - rect.left) / rect.width) * 28)),
+    y: Math.min(27.9, Math.max(0.1, ((e.clientY - rect.top) / rect.height) * 28)),
+  };
+}
+
+function drawSegment(from, to) {
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  drawing = true;
+  lastPoint = pointerPos(e);
+  drawSegment(lastPoint, lastPoint);
+  schedulePredict();
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!drawing) return;
+  const p = pointerPos(e);
+  drawSegment(lastPoint, p);
+  lastPoint = p;
+  schedulePredict();
+});
+canvas.addEventListener("pointerup", (e) => {
+  drawing = false;
+  canvas.releasePointerCapture(e.pointerId);
+  schedulePredict();
+});
+
+function readGrid() {
+  const { data } = ctx.getImageData(0, 0, 28, 28);
+  const grid = [];
+  for (let i = 0; i < 28; i++) {
+    const row = [];
+    for (let j = 0; j < 28; j++) row.push(data[(i * 28 + j) * 4] / 255); // red channel
+    grid.push(row);
+  }
+  return grid;
+}
+
+function schedulePredict() {
+  clearTimeout(predictTimer);
+  predictTimer = setTimeout(runPredict, 250);
+}
+
+function runPredict() {
+  if (!model) return;
+  const grid = readGrid();
+  // skip if the canvas is blank
+  if (!grid.some((row) => row.some((v) => v > 0.02))) return;
+
+  const t0 = performance.now();
+  const result = forward(model, grid);
+  lastResult = result;
+  const probs = result.probs;
+  const ms = (performance.now() - t0).toFixed(1);
+  const top = probs.indexOf(Math.max(...probs));
+
+  bigDigit.textContent = top;
+  for (let d = 0; d < 10; d++) {
+    const pct = (probs[d] * 100).toFixed(1);
+    document.getElementById(`bar-${d}`).style.width = pct + "%";
+    document.getElementById(`pct-${d}`).textContent = pct + "%";
+    barsEl.children[d].classList.toggle("top", d === top);
+  }
+  setStatus(`Predicted ${top} (${(probs[top] * 100).toFixed(1)}% confidence) in ${ms} ms`);
+  renderLayer();
+}
+
+document.getElementById("clear-btn").addEventListener("click", () => {
+  clearCanvas();
+  bigDigit.textContent = "?";
+  for (let d = 0; d < 10; d++) {
+    document.getElementById(`bar-${d}`).style.width = "0%";
+    document.getElementById(`pct-${d}`).textContent = "";
+    barsEl.children[d].classList.remove("top");
+  }
+  lastResult = null;
+  renderLayer();
+  setStatus("Canvas cleared. Draw a digit to predict.");
+});
+document.getElementById("predict-btn").addEventListener("click", runPredict);
+
+// Load weights: try fetching first (works when served over http), fall back
+// to a file picker (works when opened directly via file://).
+async function loadModel(json) {
+  model = json.weights;
+  if (model.length !== 8 || model[0].kernels.length !== 6 || model[2].kernels.length !== 16)
+    throw new Error("weights file does not match the expected 8-layer CNN");
+  setStatus("Weights loaded. Draw a digit to predict.");
+}
+
+fileFallback.addEventListener("change", () => {
+  const file = fileFallback.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      loadModel(JSON.parse(reader.result));
+    } catch (err) {
+      setStatus("Failed to parse weights file: " + err.message, true);
+    }
+  };
+  reader.readAsText(file);
+});
+
+(async () => {
+  try {
+    const res = await fetch("weights_cnn.json");
+    if (!res.ok) throw new Error(res.status);
+    await loadModel(await res.json());
+  } catch {
+    fileFallback.style.display = "block";
+    setStatus("Could not fetch weights_cnn.json automatically. Pick the file (or serve this folder over http).", true);
+  }
+})();
+</script>
+</body>
+</html>
