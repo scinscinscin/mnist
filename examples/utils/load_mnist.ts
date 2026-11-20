@@ -1,10 +1,8 @@
 import fs from "node:fs";
-import { Matrix } from "./matrix";
-import { Tensor, Tensor2D, Tensor3D } from "./network";
+import { Matrix } from "../../src/matrix";
+import { Sample, Tensor2D, Tensor3D } from "../../src/network";
 
-export type Sample = { input: Tensor; label: Tensor2D };
-
-export function load_mnist(path = "./mnist_train.csv"): Sample[] {
+export function load_mnist(path = "./datasets/mnist/mnist_train.csv"): Sample[] {
   const raw = fs.readFileSync(path, "utf8");
   const lines = raw.split(/\r?\n/);
 
@@ -25,7 +23,7 @@ export function load_mnist(path = "./mnist_train.csv"): Sample[] {
   return samples;
 }
 
-export function load_mnist_square(path = "./mnist_train.csv"): Sample[] {
+export function load_mnist_square(path = "./datasets/mnist/mnist_train.csv"): Sample[] {
   const raw = fs.readFileSync(path, "utf8");
   const lines = raw.split(/\r?\n/);
 

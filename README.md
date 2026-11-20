@@ -60,12 +60,19 @@ nn.train(shuffled_training, { max_epochs, batch_size, learning_rate, benchmark }
  - `ConvolutionaLayer` - accepts and returns a 3D matrix as an input with `rows x columns x channels` for dimensions. It can learn multiple kernel over the input data and output multiple activation maps
  - `MaxPoolingLayer` and `AveragePoolingLayer` - accepts and returns a 3D matrix, downscaling each channel
  - `FlattenLayer` - accepts a 3D matrix and returns a 1D matrix of the concatenated rows and channels
+ - `LSTMLayer` - accepts and returns a 3D matrix where each channel is one time step (a `1 x input_size` row). It runs the recurrence over the whole sequence and backpropagates through time
 
 Each layer is implemneted as a class that implements methods specific to the layer, like their forward and backward pass calculations. 
 
 Forward pass calculations are stored for use in the backwards pass. Calculated weight updates are accumulated for an entire batch, and applied at the end of each, **implementing stochastic gradient descent (SGD)**.
 
 A benchmark is applied every 10 epochs against the test set to see if the model is regressing. If overall accuracy is lower than the previous benchmark, the training is stopped early.
+
+### Things that would be nice to implement
+
+ - A status bar that shows the current progress per epoch and has an estimated time until the end of epoch
+ - Learning rate annealing system / dynamic learning rate like ADAM
+ - Ability to save the best weights
 
 ---
 

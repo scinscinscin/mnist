@@ -1,0 +1,12 @@
+<S>: <PROGRAM>;
+<PROGRAM: program>: (<OBJECT_LIST: objects>)? [EOF];
+<OBJECT_LIST: object_list>: <OBJECT: object> (<OBJECT_LIST: rest>)?;
+
+<JSON_VALUE: literal_value>: [STRING | INTEGER | FLOAT | NULL | TRUE | FALSE: literal_value];
+<JSON_VALUE: array_value>: [LEFT_BRACKET] (<ELEMENT_LIST: element_list>)? [RIGHT_BRACKET];
+<ELEMENT_LIST: element_list>: <JSON_VALUE: value> ([COMMA] <ELEMENT_LIST: rest>)?;
+
+<JSON_VALUE: object_value>: <OBJECT: object>;
+<OBJECT: object>: [LEFT_BRACE] (<PROPERTY_LIST: property_list>)? [RIGHT_BRACE];
+<PROPERTY_LIST: property_list>: <PROPERTY: property> ([COMMA] <PROPERTY_LIST: rest>)?;
+<PROPERTY: property>: [STRING: key] [COLON] <JSON_VALUE: value>;
